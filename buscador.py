@@ -1,4 +1,4 @@
-from ast import List
+import time
 from dataclasses import dataclass
 from os import getcwd
 from selenium import webdriver
@@ -7,9 +7,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, ElementClickInterceptedException
 from webdriver_manager.chrome import ChromeDriverManager
-from tenacity import *
 from logger import logger
 from placa import Placa
 import logging
@@ -51,24 +50,35 @@ class Buscador():
         def searchPage():
             '''Realiza varredura da pagina. Execucao para quando todos produtos forem lidos ou algum produto estiver Esgotado.\n\n
             Quando produto estiver esgotado, running = False'''
+            
+            def verificaPromocao(card):
+                if EC.all_of(EC.presence_of_element_located((By.TAG_NAME, 's')))(card):
+                    return True
+                return False
+
+            def verificaEsgotado(card):
+                if EC.all_of(EC.text_to_be_present_in_element((By.TAG_NAME, 'p'), text_='Esgotado'))(card):
+                    return True
+                return False
 
             logger.info('Varrendo pagina...')
 
-            placas = [a for a in driver.find_elements(By.CSS_SELECTOR, "[data-cy*='list-product']")]
+            placas = driver.find_elements(By.CSS_SELECTOR, "[data-cy*='list-product']")
 
             for placa in placas:
                 if self.running:
                     details = placa.find_element(By.CLASS_NAME, 'MuiCardContent-root')
-                    if EC.all_of(EC.visibility_of_element_located((By.CLASS_NAME,'jss191')))(details):
+                    if verificaEsgotado(details):
                         self.running = False
                         break
-
                     link = placa.get_attribute('href') # Link
                     nome = details.find_element(By.TAG_NAME, 'h2').text # Nome
-                    preco = details.find_element(By.CLASS_NAME, 'jss200').text.replace('.','').replace(',','.') # Preco
-                    
+                    if verificaPromocao(details):
+                        preco = details.find_element(By.XPATH, 'div/div/div/div[2]').text.replace('.','').replace(',','.') # Preco
+                    else:
+                        preco = details.find_element(By.XPATH, 'div/div/div/div').text.replace('.','').replace(',','.') # Preco
                     preco = Decimal(sub(r'[^\d.]', '', preco))
-                    placa = Placa(link=link,nome=nome,preco=preco)
+                    placa = Placa(link=link,nome=nome,preco=preco,site="Pichau")
                     self.processedCards.append(placa)
 
         def searchAndConfirmPopup():
@@ -109,8 +119,66 @@ class Buscador():
         
         logger.info(f'[PICHAU] {len(a.processedCards)} placas carregadas.')
 
-    def buscaTerabyte():
-        ...
+    def buscaTerabyte(self):
+        '''Realiza busca no site da Terabyte'''
+
+    def buscaKabum(self):
+        '''Realiza busca no site da Kabum'''
+        def filterProducts():
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "option[value='price']")))
+            driver.find_element(By.CSS_SELECTOR, "option[value='price']").click()
+            time.sleep(0.5)
+            WebDriverWait(driver, 10).until(EC.invisibility_of_element_located((By.CSS_SELECTOR, '#kloader1')))
+            if (EC.all_of(EC.visibility_of_element_located((By.CSS_SELECTOR, "#onetrust-accept-btn-handler")))):
+                driver.find_element(By.CSS_SELECTOR, "#onetrust-accept-btn-handler").click()
+                time.sleep(3)
+            try:
+                driver.find_element(By.CSS_SELECTOR, "input[value='kabum_product']").click()
+            except ElementClickInterceptedException:
+                driver.find_element(By.CSS_SELECTOR, "#onetrust-accept-btn-handler").click()
+                time.sleep(3)
+                WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[value='kabum_product']").click()))
+            time.sleep(0.5)
+            WebDriverWait(driver, 10).until(EC.invisibility_of_element_located((By.CSS_SELECTOR, '#kloader1')))
+
+        def searchPage():
+            WebDriverWait(driver, 10).until(EC.all_of(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, 'div.productCard')),
+                EC.invisibility_of_element_located((By.CSS_SELECTOR, '#kloader1'))
+            ))
+            cards = driver.find_elements(By.CSS_SELECTOR, 'div.productCard')
+            for card in cards:
+                if self.running:
+                    if (EC.any_of(EC.presence_of_element_located((By.CSS_SELECTOR, 'a.unavailableFooterCard')))(card)):
+                        self.running = False
+                        break
+                    link = card.find_element(By.CSS_SELECTOR, 'a').get_attribute('href')
+                    nome = card.find_element(By.CSS_SELECTOR, 'span.nameCard').text
+                    preco = card.find_element(By.CSS_SELECTOR, 'span.priceCard').text.replace('.','').replace(',','.') # Preco
+                    
+                    preco = Decimal(sub(r'[^\d.]', '', preco))
+                    placa = Placa(link=link,nome=nome,preco=preco,site="Kabum")
+                    self.processedCards.append(placa)
+
+        def moveToNextPage():
+            '''Desce ate o fundo da pagina e clica no Botao de Proxima Pagina. Para execucao quando nao houver mais paginas ou running = False'''
+            action = ActionChains(driver)
+            try:
+                nextBtn = driver.find_element(By.CSS_SELECTOR, 'a.nextLink')
+            except NoSuchElementException:
+                self.running = False
+            if self.running:
+                action.move_to_element(nextBtn).perform()
+                time.sleep(1)
+                nextBtn.click()
+                time.sleep(3)
+
+        driver.get('https://www.kabum.com.br/hardware/placa-de-video-vga')
+        filterProducts()
+        self.running = True
+        while self.running: # Loop executa, ate variavel running mudar para False.
+            searchPage()
+            moveToNextPage()
 
     def finishSearch(self):
         '''Fecha o driver e encerra a execucao'''
@@ -122,4 +190,7 @@ a = Buscador()
 
 a.setup()
 a.buscaPichau()
-a.finishSearch()
+a.buscaKabum()
+
+# placasTeste = [placa for placa in a.processedCards if placa.site == "Kabum" and placa.preco > 2000]
+# a.finishSearch()

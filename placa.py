@@ -5,3 +5,4 @@ class Placa():
     nome:str
     preco:int
     link:str
+    site:str
